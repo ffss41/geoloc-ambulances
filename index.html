@@ -1,0 +1,376 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Géoloc ambulances — FFSS 41</title>
+
+  <!-- Carte : Leaflet + OpenStreetMap (gratuit) -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+  <!-- Supabase -->
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+
+  <style>
+    :root {
+      --bleu: #1e3a8a;
+      --fond: #f3f4f6;
+      --carte: #ffffff;
+      --texte: #111827;
+      --gris: #6b7280;
+      --bordure: #e5e7eb;
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; height: 100%; font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; color: var(--texte); background: var(--fond); }
+    .cache { display: none !important; }
+
+    /* ---------- Connexion ---------- */
+    #ecran-connexion { height: 100%; display: flex; align-items: center; justify-content: center; padding: 16px; }
+    .boite-connexion { background: var(--carte); padding: 32px; border-radius: 12px; box-shadow: 0 4px 20px rgba(0,0,0,.08); width: 100%; max-width: 380px; }
+    .boite-connexion h1 { margin: 0 0 4px; font-size: 22px; color: var(--bleu); }
+    .boite-connexion p { margin: 0 0 24px; color: var(--gris); font-size: 14px; }
+    .boite-connexion label { display: block; font-size: 14px; font-weight: 600; margin-bottom: 6px; }
+    .boite-connexion input { width: 100%; padding: 10px 12px; border: 1px solid var(--bordure); border-radius: 8px; font-size: 15px; margin-bottom: 16px; }
+    .bouton { background: var(--bleu); color: #fff; border: none; border-radius: 8px; padding: 10px 16px; font-size: 15px; font-weight: 600; cursor: pointer; }
+    .bouton:hover { opacity: .9; }
+    .bouton.large { width: 100%; }
+    .bouton.leger { background: rgba(255,255,255,.15); font-size: 14px; padding: 8px 12px; }
+    .erreur { color: #dc2626; font-size: 14px; margin-top: 12px; min-height: 18px; }
+
+    /* ---------- Application ---------- */
+    #ecran-app { height: 100%; display: flex; flex-direction: column; }
+    header { background: var(--bleu); color: #fff; padding: 10px 16px; display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+    header h1 { font-size: 18px; margin: 0; flex: 1; min-width: 180px; }
+    .etat-direct { font-size: 13px; display: flex; align-items: center; gap: 6px; }
+    .etat-direct .point { width: 10px; height: 10px; border-radius: 50%; background: #9ca3af; }
+    .etat-direct.ok .point { background: #22c55e; box-shadow: 0 0 0 3px rgba(34,197,94,.3); }
+
+    main { flex: 1; display: flex; min-height: 0; }
+    #liste { width: 340px; overflow-y: auto; padding: 12px; border-right: 1px solid var(--bordure); background: var(--fond); }
+    #carte { flex: 1; }
+
+    .vehicule { background: var(--carte); border-radius: 10px; padding: 12px; margin-bottom: 10px; border-left: 6px solid var(--c); box-shadow: 0 1px 3px rgba(0,0,0,.06); }
+    .vehicule.perdu { opacity: .7; }
+    .vehicule-tete { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+    .vehicule-nom { font-weight: 700; font-size: 16px; background: none; border: none; padding: 0; cursor: pointer; color: var(--texte); text-align: left; }
+    .vehicule-nom:hover { text-decoration: underline; }
+    .pastille { font-size: 12px; font-weight: 600; color: #fff; background: var(--c); padding: 3px 8px; border-radius: 999px; white-space: nowrap; }
+    .vehicule-info { font-size: 13px; color: var(--gris); margin: 6px 0 10px; }
+    .vehicule-info.alerte { color: #dc2626; font-weight: 600; }
+    .statuts { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+    .statuts button { border: 2px solid var(--c); background: #fff; color: var(--c); border-radius: 6px; padding: 6px 4px; font-size: 13px; font-weight: 600; cursor: pointer; }
+    .statuts button.actif { background: var(--c); color: #fff; }
+
+    /* Étiquettes sur la carte */
+    .balise-conteneur { background: none; border: none; }
+    .balise { position: absolute; transform: translate(-50%, -100%); background: var(--c); color: #fff; font-weight: 700; font-size: 13px; padding: 4px 8px; border-radius: 6px; white-space: nowrap; box-shadow: 0 2px 6px rgba(0,0,0,.35); border: 2px solid #fff; }
+    .balise::after { content: ""; position: absolute; left: 50%; bottom: -8px; transform: translateX(-50%); border: 6px solid transparent; border-top-color: #fff; }
+    .balise.perdu { opacity: .45; }
+
+    @media (max-width: 760px) {
+      main { flex-direction: column-reverse; }
+      #liste { width: 100%; max-height: 45%; border-right: none; border-top: 1px solid var(--bordure); }
+    }
+  </style>
+</head>
+<body>
+
+  <!-- ===== Écran de connexion ===== -->
+  <section id="ecran-connexion" class="cache">
+    <form class="boite-connexion" id="form-connexion">
+      <h1>Géoloc ambulances</h1>
+      <p>FFSS 41 — Suivi des véhicules en DPS</p>
+      <label for="email">Adresse e-mail</label>
+      <input type="email" id="email" required autocomplete="username">
+      <label for="mdp">Mot de passe</label>
+      <input type="password" id="mdp" required autocomplete="current-password">
+      <button type="submit" class="bouton large" id="bouton-connexion">Se connecter</button>
+      <div class="erreur" id="erreur-connexion"></div>
+    </form>
+  </section>
+
+  <!-- ===== Application ===== -->
+  <section id="ecran-app" class="cache">
+    <header>
+      <h1>🚑 Géoloc ambulances — FFSS 41</h1>
+      <div class="etat-direct" id="etat-direct"><span class="point"></span><span id="etat-texte">Connexion…</span></div>
+      <button class="bouton leger" id="bouton-tout-voir">Tout afficher</button>
+      <button class="bouton leger" id="bouton-deconnexion">Déconnexion</button>
+    </header>
+    <main>
+      <div id="liste"></div>
+      <div id="carte"></div>
+    </main>
+  </section>
+
+<script>
+  // =====================================================
+  // À REMPLIR : Project Settings → API (ou API Keys)
+  // =====================================================
+  const SUPABASE_URL = "sb_publishable_1yp4Td2XsrrWT1SL78j2iQ_U2gd0tSk";
+  const SUPABASE_CLE = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InRpdmhxbHJ4cG50enlseWlzdmloIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTAzNTY4MTAsImV4cCI6MjEwNTkzMjgxMH0.Bl8qhosjRXv500qEZ4I_2D7JP-hTQb7NUiEapPiRrDQ";
+
+  // Délai au-delà duquel on considère le signal perdu (2 minutes)
+  const DELAI_SIGNAL_PERDU_MS = 2 * 60 * 1000;
+
+  const STATUTS = {
+    disponible:      { libelle: "Disponible",      couleur: "#16a34a" },
+    en_intervention: { libelle: "En intervention", couleur: "#dc2626" },
+    en_transport:    { libelle: "En transport",    couleur: "#ea580c" },
+    indisponible:    { libelle: "Indisponible",    couleur: "#6b7280" },
+  };
+
+  const sb = supabase.createClient(SUPABASE_URL, SUPABASE_CLE);
+
+  const vehicules = new Map();  // id -> données du véhicule
+  const marqueurs = new Map();  // id -> marqueur sur la carte
+  let carte = null;
+  let canal = null;
+  let minuterie = null;
+  let premierCentrage = true;
+
+  // ---------- Outils ----------
+  function echapper(texte) {
+    return String(texte ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+  }
+
+  function signalPerdu(v) {
+    if (!v.derniere_position) return true;
+    return Date.now() - new Date(v.derniere_position).getTime() > DELAI_SIGNAL_PERDU_MS;
+  }
+
+  function ilYa(date) {
+    if (!date) return "Aucune position reçue";
+    const secondes = Math.max(0, Math.round((Date.now() - new Date(date).getTime()) / 1000));
+    if (secondes < 10) return "Position à l'instant";
+    if (secondes < 60) return `Position il y a ${secondes} s`;
+    const minutes = Math.round(secondes / 60);
+    if (minutes < 60) return `Position il y a ${minutes} min`;
+    const d = new Date(date);
+    return `Dernière position à ${d.toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" })} le ${d.toLocaleDateString("fr-FR")}`;
+  }
+
+  function statutDe(v) {
+    return STATUTS[v.statut] ?? STATUTS.indisponible;
+  }
+
+  // ---------- Écrans ----------
+  function afficherConnexion() {
+    document.getElementById("ecran-app").classList.add("cache");
+    document.getElementById("ecran-connexion").classList.remove("cache");
+    if (canal) { sb.removeChannel(canal); canal = null; }
+    if (minuterie) { clearInterval(minuterie); minuterie = null; }
+  }
+
+  async function afficherApp() {
+    document.getElementById("ecran-connexion").classList.add("cache");
+    document.getElementById("ecran-app").classList.remove("cache");
+
+    if (!carte) creerCarte();
+    setTimeout(() => carte.invalidateSize(), 50);
+
+    await chargerVehicules();
+    abonnerTempsReel();
+
+    // Mise à jour des "il y a X min" et du signal perdu toutes les 15 s
+    if (!minuterie) minuterie = setInterval(toutRedessiner, 15000);
+  }
+
+  // ---------- Carte ----------
+  function creerCarte() {
+    carte = L.map("carte").setView([47.62, 1.32], 12); // Blois / Villebarou
+    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+      maxZoom: 19,
+      attribution: '&copy; contributeurs <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
+    }).addTo(carte);
+  }
+
+  function majMarqueur(v) {
+    const existant = marqueurs.get(v.id);
+
+    if (v.latitude == null || v.longitude == null) {
+      if (existant) { carte.removeLayer(existant); marqueurs.delete(v.id); }
+      return;
+    }
+
+    const s = statutDe(v);
+    const perdu = signalPerdu(v);
+    const icone = L.divIcon({
+      className: "balise-conteneur",
+      iconSize: [0, 0],
+      html: `<div class="balise ${perdu ? "perdu" : ""}" style="--c:${s.couleur}">${echapper(v.nom)}</div>`,
+    });
+
+    const vitesse = v.vitesse_kmh != null ? `<br>Vitesse : ${Math.round(v.vitesse_kmh)} km/h` : "";
+    const precision = v.precision_m != null ? `<br>Précision : ± ${Math.round(v.precision_m)} m` : "";
+    const popup = `<strong>${echapper(v.nom)}</strong><br>${s.libelle}<br>${ilYa(v.derniere_position)}${vitesse}${precision}`
+      + (perdu ? `<br><strong style="color:#dc2626">⚠ Signal perdu</strong>` : "");
+
+    if (existant) {
+      existant.setLatLng([v.latitude, v.longitude]);
+      existant.setIcon(icone);
+      existant.setPopupContent(popup);
+    } else {
+      const m = L.marker([v.latitude, v.longitude], { icon: icone }).addTo(carte).bindPopup(popup);
+      marqueurs.set(v.id, m);
+    }
+  }
+
+  function toutAfficher() {
+    const points = [...vehicules.values()]
+      .filter(v => v.latitude != null && v.longitude != null)
+      .map(v => [v.latitude, v.longitude]);
+    if (points.length === 1) carte.setView(points[0], 15);
+    else if (points.length > 1) carte.fitBounds(points, { padding: [60, 60], maxZoom: 16 });
+  }
+
+  function centrerSur(id) {
+    const m = marqueurs.get(id);
+    if (!m) { alert("Ce véhicule n'a pas encore envoyé de position."); return; }
+    carte.setView(m.getLatLng(), 16);
+    m.openPopup();
+  }
+
+  // ---------- Liste ----------
+  function dessinerListe() {
+    const liste = document.getElementById("liste");
+    const tries = [...vehicules.values()].sort((a, b) => a.nom.localeCompare(b.nom, "fr", { numeric: true }));
+
+    if (tries.length === 0) {
+      liste.innerHTML = `<p style="color:var(--gris)">Aucun véhicule. Ajoute-les dans la table <em>vehicules</em> de Supabase.</p>`;
+      return;
+    }
+
+    liste.innerHTML = tries.map(v => {
+      const s = statutDe(v);
+      const perdu = signalPerdu(v);
+      const boutons = Object.entries(STATUTS).map(([cle, st]) =>
+        `<button style="--c:${st.couleur}" class="${v.statut === cle ? "actif" : ""}" data-id="${v.id}" data-statut="${cle}">${st.libelle}</button>`
+      ).join("");
+
+      return `
+        <div class="vehicule ${perdu ? "perdu" : ""}" style="--c:${s.couleur}">
+          <div class="vehicule-tete">
+            <button class="vehicule-nom" data-centrer="${v.id}">${echapper(v.nom)}</button>
+            <span class="pastille">${s.libelle}</span>
+          </div>
+          <div class="vehicule-info ${perdu && v.derniere_position ? "alerte" : ""}">
+            ${perdu && v.derniere_position ? "⚠ Signal perdu — " : ""}${ilYa(v.derniere_position)}
+          </div>
+          <div class="statuts">${boutons}</div>
+        </div>`;
+    }).join("");
+  }
+
+  function toutRedessiner() {
+    vehicules.forEach(majMarqueur);
+    dessinerListe();
+  }
+
+  // ---------- Données ----------
+  async function chargerVehicules() {
+    const { data, error } = await sb.from("vehicules").select("*").order("nom");
+    if (error) { alert("Erreur de chargement : " + error.message); return; }
+
+    vehicules.clear();
+    marqueurs.forEach(m => carte.removeLayer(m));
+    marqueurs.clear();
+    data.forEach(v => vehicules.set(v.id, v));
+    toutRedessiner();
+
+    if (premierCentrage) { toutAfficher(); premierCentrage = false; }
+  }
+
+  async function changerStatut(id, statut) {
+    const v = vehicules.get(id);
+    if (!v || v.statut === statut) return;
+
+    const ancien = v.statut;
+    v.statut = statut;          // affichage immédiat
+    toutRedessiner();
+
+    const { error } = await sb.from("vehicules").update({ statut }).eq("id", id);
+    if (error) {
+      v.statut = ancien;        // on annule si échec
+      toutRedessiner();
+      alert("Impossible de changer le statut : " + error.message);
+    }
+  }
+
+  function abonnerTempsReel() {
+    if (canal) sb.removeChannel(canal);
+
+    canal = sb.channel("vehicules-direct")
+      .on("postgres_changes", { event: "*", schema: "public", table: "vehicules" }, (payload) => {
+        if (payload.eventType === "DELETE") {
+          const id = payload.old.id;
+          vehicules.delete(id);
+          const m = marqueurs.get(id);
+          if (m) { carte.removeLayer(m); marqueurs.delete(id); }
+        } else {
+          vehicules.set(payload.new.id, payload.new);
+          majMarqueur(payload.new);
+        }
+        dessinerListe();
+      })
+      .subscribe((etat) => {
+        const bloc = document.getElementById("etat-direct");
+        const texte = document.getElementById("etat-texte");
+        if (etat === "SUBSCRIBED") {
+          bloc.classList.add("ok");
+          texte.textContent = "En direct";
+          chargerVehicules(); // rattrape ce qui a pu changer pendant une coupure
+        } else {
+          bloc.classList.remove("ok");
+          texte.textContent = "Reconnexion…";
+        }
+      });
+  }
+
+  // ---------- Événements ----------
+  document.getElementById("form-connexion").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const bouton = document.getElementById("bouton-connexion");
+    const erreur = document.getElementById("erreur-connexion");
+    erreur.textContent = "";
+    bouton.disabled = true;
+    bouton.textContent = "Connexion…";
+
+    const { error } = await sb.auth.signInWithPassword({
+      email: document.getElementById("email").value.trim(),
+      password: document.getElementById("mdp").value,
+    });
+
+    bouton.disabled = false;
+    bouton.textContent = "Se connecter";
+    if (error) { erreur.textContent = "E-mail ou mot de passe incorrect."; return; }
+    afficherApp();
+  });
+
+  document.getElementById("bouton-deconnexion").addEventListener("click", async () => {
+    await sb.auth.signOut();
+  });
+
+  document.getElementById("bouton-tout-voir").addEventListener("click", toutAfficher);
+
+  document.getElementById("liste").addEventListener("click", (e) => {
+    const boutonStatut = e.target.closest("button[data-statut]");
+    if (boutonStatut) { changerStatut(boutonStatut.dataset.id, boutonStatut.dataset.statut); return; }
+    const boutonNom = e.target.closest("button[data-centrer]");
+    if (boutonNom) centrerSur(boutonNom.dataset.centrer);
+  });
+
+  sb.auth.onAuthStateChange((evenement) => {
+    if (evenement === "SIGNED_OUT") afficherConnexion();
+  });
+
+  // ---------- Démarrage ----------
+  (async () => {
+    const { data: { session } } = await sb.auth.getSession();
+    if (session) afficherApp();
+    else afficherConnexion();
+  })();
+</script>
+</body>
+</html>
